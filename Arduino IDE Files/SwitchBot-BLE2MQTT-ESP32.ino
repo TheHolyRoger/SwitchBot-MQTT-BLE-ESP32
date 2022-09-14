@@ -4573,6 +4573,9 @@ void rescan(int seconds) {
     delay(50);
     addToPublish(ESPMQTTTopic.c_str(), "{\"status\":\"activescanning\"}");
   }
+  if (resetBluetoothStack) {
+    reset_bluetooth();
+  }
 
   pScan->setActiveScan(isActiveScan);
 
@@ -4604,6 +4607,9 @@ void scanForever() {
     addToPublish(ESPMQTTTopic.c_str(), "{\"status\":\"passivescanning\"}");
   }
   delay(50);
+  if (resetBluetoothStack) {
+    reset_bluetooth();
+  }
   pScan->setActiveScan(isActiveScan);
   if (ledOnScan) {
     digitalWrite(LED_BUILTIN, ledONValue);
@@ -4814,9 +4820,6 @@ void recurringRescan() {
 
   if (((millis() - lastRescan) >= (rescanTime * 1000)) || forceRescan) {
     if (!processing && !(pScan->isScanning()) && !isRescanning) {
-      if (resetBluetoothStack) {
-        reset_bluetooth();
-      }
       rescan(initialScan);
     }
     else {
@@ -4835,9 +4838,6 @@ void startForeverScan() {
     return;
   }
   if (!processing && !(pScan->isScanning()) && !isRescanning) {
-    if (resetBluetoothStack) {
-      reset_bluetooth();
-    }
     scanForever();
   }
 }
