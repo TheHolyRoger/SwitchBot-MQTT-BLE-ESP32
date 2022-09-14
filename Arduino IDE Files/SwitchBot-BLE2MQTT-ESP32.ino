@@ -482,6 +482,7 @@ static const int trySending = 30;                            // How many times t
 static const int initialScan = 120;                          // How many seconds to scan for bots on ESP reboot and autoRescan. Once all devices are found scan stops, so you can set this to a big number
 static const int infoScanTime = 60;                          // How many seconds to scan for single device status updates
 static const int rescanTime = 10800;                         // Automatically perform a full active scan for device info of all devices every X seconds (default 3 hours). XXXXActiveScanSecs will also active scan on schedule
+static const int resetBluetoothTime = 900;                   // Reset Bluetooth stack every X seconds
 static const int queueSize = 50;                             // Max number of control/requestInfo/rescan MQTT commands stored in the queue. If you send more then queueSize, they will be ignored
 static const int defaultBotWaitTime = 2;                     // wait at least X seconds between control command send to bots. ESP32 will detect if bot is in press mode with a hold time and will add hold time to this value per device
 static const int defaultCurtainWaitTime = 0;                 // wait at least X seconds between control command send to curtains
@@ -507,6 +508,7 @@ static const int missedContactDelay = 30;                    // Experimental. If
 static const int missedMotionDelay = 30;                     // Experimental. If a motion is somehow missed while controlling bots, compare lastmotion from esp32 with motion/contact sensor lastmotion. If different is greater than X, send a motion message. Note: Not used if multiple ESP32s are meshed
 
 static const bool sendBackupMotionContact = false;           // Experimental. Compares last contact/motion time value from switchbot contact/motion devices against what the esp32 received. If ESP32 missed one while controlling bots, it will send a motion/contact message after. Note: Not used if multiple ESP32s are meshed
+static const bool resetBluetoothStack = true;                // Reset Bluetooth stack before each scan
 static const bool autoRescan = true;                         // perform automatic rescan (uses rescanTime and initialScan).
 static const bool activeScanOnSchedule = true;               // perform an active scan on decice types based on the scheduled seconds values for XXXXActiveScanSecs
 static const bool scanAfterControl = true;                   // perform requestInfo after successful control command (uses botScanTime).
@@ -2446,6 +2448,7 @@ void processMeterRSSI(std::string & aDevice, std::string & deviceMac, long anRSS
 static unsigned long lastOnlinePublished = 0;
 static unsigned long lastRescan = 0;
 static unsigned long lastScanCheck = 0;
+static unsigned long lastBtReset = 0;
 static bool noResponse = false;
 static bool waitForResponse = false;
 static std::string lastDeviceControlled = "";
@@ -4235,119 +4238,14 @@ uint32_t getPassCRC(std::string & aDevice) {
 
 static ClientCallbacks clientCB;
 
-void setup () {
+void deinit_bluetooth () {
+  NimBLEDevice::deinit(true);
+  pScan = nullptr;
+  allSwitchbotsDev = {};
+  allSwitchbotsScanned = {};
+}
 
-  if (ledHighEqualsON) {
-    ledONValue = HIGH;
-    ledOFFValue = LOW;
-  }
-  else {
-    ledONValue = LOW;
-    ledOFFValue = HIGH;
-  }
-
-  if (strcmp(hostForScan, hostForControl) != 0) {
-    isMeshNode = true;
-  }
-
-  if (isMeshNode) {
-    if (meshMeters) {
-      meterTopic = ESPMQTTTopicMesh + "/meter/";
-    }
-    if (meshContactSensors) {
-      contactTopic = ESPMQTTTopicMesh + "/contact/";
-    }
-    if (meshMotionSensors) {
-      motionTopic = ESPMQTTTopicMesh + "/motion/";
-    }
-  }
-
-  forceRescan = false;
-  pinMode (LED_BUILTIN, OUTPUT);
-  Serial.begin(115200);
-  // Connect to WiFi network
-  WiFi.begin(ssid, password);
-  printAString("");
-
-  // Wait for connection
-  /*while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    if (printSerialOutputForDebugging) {
-      Serial.print(".");
-    }
-    }
-    if (printSerialOutputForDebugging) {
-    Serial.println("");
-    Serial.print("Connected to ");
-    Serial.println(ssid);
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-    }
-  */
-  /*use mdns for host name resolution*/
-  /*  if (!MDNS.begin(host)) { //http://esp32.local
-      if (printSerialOutputForDebugging) {
-        Serial.println("Error setting up MDNS responder!");
-      }
-      while (1) {
-        delay(1000);
-      }
-    }
-    if (printSerialOutputForDebugging) {
-      Serial.println("mDNS responder started");
-    }*/
-  /*return index page which is stored in serverIndex */
-  server.on("/", HTTP_GET, []() {
-    server.sendHeader("Connection", "close");
-    if (useLoginScreen) {
-      if (!server.authenticate(otaUserId.c_str(), otaPass.c_str())) {
-        return server.requestAuthentication();
-      }
-    }
-    server.send(200, "text/html", serverIndex);
-  });
-  /*handling uploading firmware file */
-  server.on("/update", HTTP_POST, []() {
-    server.sendHeader("Connection", "close");
-    if (useLoginScreen) {
-      if (!server.authenticate(otaUserId.c_str(), otaPass.c_str())) {
-        return server.requestAuthentication();
-      }
-    }
-    server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
-    ESP.restart();
-  }, []() {
-    HTTPUpload& upload = server.upload();
-    if (upload.status == UPLOAD_FILE_START) {
-      if (printSerialOutputForDebugging) {
-        Serial.printf("Update: %s\n", upload.filename.c_str());
-      }
-      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { //start with max available size
-        Update.printError(Serial);
-      }
-    } else if (upload.status == UPLOAD_FILE_WRITE) {
-      /* flashing firmware to ESP*/
-      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-        Update.printError(Serial);
-      }
-    } else if (upload.status == UPLOAD_FILE_END) {
-      if (Update.end(true)) { //true to set the size to the current progress
-        if (printSerialOutputForDebugging) {
-          Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
-        }
-      } else {
-        Update.printError(Serial);
-      }
-    }
-  });
-  server.begin();
-
-  client.setMqttReconnectionAttemptDelay(10);
-  client.enableLastWillMessage(lastWill, "offline", true);
-  client.setKeepAlive(60);
-  client.setMaxPacketSize(mqtt_packet_size);
-  //client.enableMQTTPersistence();
-
+void setup_bluetooth (bool firstCall = false) {
   static std::map<std::string, std::string> allBotsTemp = {};
   static std::map<std::string, std::string> allCurtainsTemp = {};
   static std::map<std::string, std::string> allMetersTemp = {};
@@ -4358,6 +4256,7 @@ void setup () {
   static std::map<std::string, bool> botsSimulateONOFFinPRESSmodeTemp = {};
   static std::map<std::string, int> botsSimulatedOFFHoldTimesTemp = {};
   static std::map<std::string, int> botsSimulatedONHoldTimesTemp = {};
+
   NimBLEDevice::init("");
 
   std::map<std::string, std::string>::iterator it = allBots.begin();
@@ -4523,7 +4422,136 @@ void setup () {
   pScan->setActiveScan(isActiveScan);
   pScan->setMaxResults(100);
   //pScan->setFilterPolicy(BLE_HCI_SCAN_FILT_USE_WL);
+}
 
+void reset_bluetooth() {
+  if (isActiveScan && (millis() - lastBtReset) >= (resetBluetoothTime * 1000)) {
+    lastBtReset = millis();
+
+    processing = true;
+    printAString("Resetting Bluetooth stack");
+    deinit_bluetooth();
+    delay(500);
+    setup_bluetooth();
+    delay(500);
+    processing = false;
+  }
+}
+
+void setup () {
+
+  if (ledHighEqualsON) {
+    ledONValue = HIGH;
+    ledOFFValue = LOW;
+  }
+  else {
+    ledONValue = LOW;
+    ledOFFValue = HIGH;
+  }
+
+  if (strcmp(hostForScan, hostForControl) != 0) {
+    isMeshNode = true;
+  }
+
+  if (isMeshNode) {
+    if (meshMeters) {
+      meterTopic = ESPMQTTTopicMesh + "/meter/";
+    }
+    if (meshContactSensors) {
+      contactTopic = ESPMQTTTopicMesh + "/contact/";
+    }
+    if (meshMotionSensors) {
+      motionTopic = ESPMQTTTopicMesh + "/motion/";
+    }
+  }
+
+  forceRescan = false;
+  pinMode (LED_BUILTIN, OUTPUT);
+  Serial.begin(115200);
+  // Connect to WiFi network
+  WiFi.begin(ssid, password);
+  printAString("");
+
+  // Wait for connection
+  /*while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    if (printSerialOutputForDebugging) {
+      Serial.print(".");
+    }
+    }
+    if (printSerialOutputForDebugging) {
+    Serial.println("");
+    Serial.print("Connected to ");
+    Serial.println(ssid);
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+    }
+  */
+  /*use mdns for host name resolution*/
+  /*  if (!MDNS.begin(host)) { //http://esp32.local
+      if (printSerialOutputForDebugging) {
+        Serial.println("Error setting up MDNS responder!");
+      }
+      while (1) {
+        delay(1000);
+      }
+    }
+    if (printSerialOutputForDebugging) {
+      Serial.println("mDNS responder started");
+    }*/
+  /*return index page which is stored in serverIndex */
+  server.on("/", HTTP_GET, []() {
+    server.sendHeader("Connection", "close");
+    if (useLoginScreen) {
+      if (!server.authenticate(otaUserId.c_str(), otaPass.c_str())) {
+        return server.requestAuthentication();
+      }
+    }
+    server.send(200, "text/html", serverIndex);
+  });
+  /*handling uploading firmware file */
+  server.on("/update", HTTP_POST, []() {
+    server.sendHeader("Connection", "close");
+    if (useLoginScreen) {
+      if (!server.authenticate(otaUserId.c_str(), otaPass.c_str())) {
+        return server.requestAuthentication();
+      }
+    }
+    server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+    ESP.restart();
+  }, []() {
+    HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      if (printSerialOutputForDebugging) {
+        Serial.printf("Update: %s\n", upload.filename.c_str());
+      }
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { //start with max available size
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      /* flashing firmware to ESP*/
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) { //true to set the size to the current progress
+        if (printSerialOutputForDebugging) {
+          Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
+        }
+      } else {
+        Update.printError(Serial);
+      }
+    }
+  });
+  server.begin();
+
+  client.setMqttReconnectionAttemptDelay(10);
+  client.enableLastWillMessage(lastWill, "offline", true);
+  client.setKeepAlive(60);
+  client.setMaxPacketSize(mqtt_packet_size);
+  //client.enableMQTTPersistence();
+
+  setup_bluetooth(true);
 }
 
 void rescan(int seconds) {
@@ -4600,6 +4628,9 @@ void rescanFind(std::string aMac) {
     isActiveScan = true;
     delay(100);
     addToPublish(ESPMQTTTopic.c_str(), "{\"status\":\"activescanning\"}");
+  }
+  if (resetBluetoothStack) {
+    reset_bluetooth();
   }
   pScan->setActiveScan(isActiveScan);
 
@@ -4783,6 +4814,9 @@ void recurringRescan() {
 
   if (((millis() - lastRescan) >= (rescanTime * 1000)) || forceRescan) {
     if (!processing && !(pScan->isScanning()) && !isRescanning) {
+      if (resetBluetoothStack) {
+        reset_bluetooth();
+      }
       rescan(initialScan);
     }
     else {
@@ -4801,6 +4835,9 @@ void startForeverScan() {
     return;
   }
   if (!processing && !(pScan->isScanning()) && !isRescanning) {
+    if (resetBluetoothStack) {
+      reset_bluetooth();
+    }
     scanForever();
   }
 }
